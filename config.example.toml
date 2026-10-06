@@ -1,0 +1,67 @@
+# Конфиг учебного бота. Рабочая копия — config.toml рядом с этим файлом,
+# права 600, в репозиторий и в чат не попадает.
+# Относительные пути считаются от папки, где лежит config.toml.
+
+[telegram]
+token = ""        # токен бота от @BotFather
+owner_id = 0      # твой числовой id в Telegram; всем остальным бот не отвечает
+
+[paths]
+data_dir = "data"         # база, аудио, резервные копии
+content_dir = "content"   # принятые md-файлы банков
+sources_dir = "sources"   # корпуса и постраничный текст Зейгарник для фрагментов
+prompts_dir = "prompts"   # инструкции для моделей
+
+[time]
+timezone = "Europe/Moscow"
+day_boundary = "03:00"    # граница учебных суток
+
+[llm]
+provider = "moonshot"
+base_url = "https://api.moonshot.ai/v1"   # консоль переехала на platform.kimi.ai, адрес API прежний
+api_key = ""
+cheap_model = "kimi-k2.6"     # модели и цены — по консоли и прайсу Moonshot на 04.10.2026
+flagship_model = "kimi-k3"
+daily_budget_usd = 0.50   # дневной предел; при достижении — только форматы с проверкой кодом
+timeout_sec = 60
+json_mode = true          # response_format json_object; выключить, если модель его не принимает
+max_tokens = 1500
+# temperature = 0.3       # не задано — не передаётся: часть моделей с рассуждением её не принимает
+# Флагман с рассуждением тратит токены рассуждения из того же предела и думает дольше
+flagship_max_tokens = 8000
+flagship_timeout_sec = 120
+
+[llm.prices]              # USD за 1 млн токенов: platform.kimi.ai/docs/pricing/chat
+cheap_input = 0.95
+cheap_output = 4.00
+flagship_input = 3.00
+flagship_output = 15.00
+
+# Поля, которые добавляются в запрос модели как есть. kimi-k2.6 по умолчанию рассуждает:
+# для коротких проверок рассуждение выключено — быстрее и дешевле.
+[llm.cheap_extra]
+thinking = { type = "disabled" }
+
+# kimi-k3 рассуждает всегда; глубина — low, high или max (по умолчанию у Moonshot max).
+[llm.flagship_extra]
+reasoning_effort = "low"
+
+[stt]
+provider = "stub"         # "deepgram" — распознавание Deepgram Nova-3 (ключ в [deepgram]); stub — только текст
+
+[tts]
+provider = "stub"         # "deepgram" — озвучка Deepgram Aura-2: недостающее в фоне, живые реплики критерия
+
+# Deepgram — распознавание и озвучка. Ключ — только здесь, в чат и на скриншоты не попадает.
+[deepgram]
+api_key = ""
+stt_model = "nova-3"
+voice = "aura-2-thalia-en"            # фразы, реплики сценариев, живые реплики
+record_voices = ["aura-2-thalia-en", "aura-2-helena-en", "aura-2-luna-en",
+                 "aura-2-apollo-en", "aura-2-arcas-en", "aura-2-odysseus-en"]   # истории и слушание — по кругу
+slow_speed = 0.8                      # медленная версия; модель держит 0.7–1.5
+
+[backup]
+time = "03:30"              # ежедневная копия базы, по Москве; бот был выключен — при первом запуске после
+keep = 14                   # сколько ежедневных копий хранить в data/backups
+weekly_to_telegram = true   # раз в неделю сжатая копия базы приходит документом со сводкой

@@ -1,0 +1,39 @@
+# Шаблон сервиса systemd для учебного бота. Пользователь и пути задаются при установке.
+# Бот ставится в отдельную папку, со своей базой и своим сервисом.
+#
+#   sudo cp deploy/studybot.service /etc/systemd/system/studybot.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now studybot
+#   journalctl -u studybot -f
+#
+# Коды выхода 2 (ошибка конфига) и 3 (бот уже запущен) не перезапускаются:
+# повтор ничего не исправит, причина видна в journalctl. Сетевые сбои
+# Telegram бот переживает сам, без выхода из процесса.
+#
+# Защита: система только для чтения, запись — в data (база, копии, аудио)
+# и content (принятые банки). Если путь данных в config.toml другой,
+# поправить ReadWritePaths.
+[Unit]
+Description=Учебный бот (Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=studybot
+WorkingDirectory=/opt/studybot
+ExecStart=/opt/studybot/.venv/bin/python -m studybot --config /opt/studybot/config.toml run
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2 3
+TimeoutStopSec=30
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/studybot/data /opt/studybot/content
+
+[Install]
+WantedBy=multi-user.target
