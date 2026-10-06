@@ -141,8 +141,7 @@ class Controller:
                 return Result(await self._no_step())
             sec = max(1, int(duration))
             if step.kind == "task" and step.task().format == INTRO:
-                # повтор за аудио при знакомстве: расшифровка не нужна, считается время
-                return Result(await self._answer(None, sec, None))
+                return Result(await self._intro_repeat(step, sec, fetch))
             if not self.stt.configured:
                 return Result([Reply("Распознавание пока не подключено. Ответь на это задание текстом.")])
             data = await fetch()
@@ -156,6 +155,31 @@ class Controller:
             if not text:
                 return Result([Reply("Не расслышал. Повтори, пожалуйста, или ответь текстом.")])
             return Result(await self._answer(text, sec, text))
+
+    async def _intro_repeat(self, step, sec: int, fetch: Fetch) -> list[Reply]:
+        """Повтор фразы при знакомстве (0.11.3): бот говорит, что расслышал, и совпало ли с фразой.
+        Совпало — дальше; нет — фраза и ещё попытка (или «Готово»). На оценку и сетку не влияет."""
+        from ..english.normalize import WILDCARD, matches, normalize
+        task = step.task()
+        if not self.stt.configured:
+            return await self._answer(None, sec, None)
+        try:
+            heard = (await self.stt.transcribe(await fetch(), "en")).strip()
+        except STTUnavailable as exc:
+            self._service_event("stt", "error", str(exc))
+            return merge(Reply("Повтор засчитан. Проверить, как прозвучало, сейчас не удалось."),
+                         await self._answer(None, sec, None))
+        target = task.expected[0] if task.expected else (task.shown_en or "")
+        template = WILDCARD in target            # «How do you say "…" in English?» — слово можно вставить или пропустить
+        if heard and (matches(heard, target, task.variants) or (template and normalize(heard) == normalize(target))):
+            return merge(Reply(f"Верно. Расслышал: «{heard.rstrip('.')}»."), await self._answer(None, sec, None))
+        rows = [[Button("Готово", f"done:{step.id}")]]
+        if task.audio_item:
+            rows.insert(0, [Button("Медленнее", f"slow:{task.audio_item}")])
+        said = f"Расслышал: «{heard.rstrip('.')}»." if heard else "Не расслышал."
+        hint = "\nНа месте «…» — любое слово, его можно и пропустить." if template else ""
+        return [Reply(f"{said} Фраза: «{task.shown_en or target}».{hint}\nПослушай ещё раз и повтори — "
+                      f"или «Готово», чтобы идти дальше.", rows)]
 
     async def on_document(self, file_name: str, size: int | None, fetch: Fetch) -> Result:
         async with self.lock:
@@ -367,6 +391,10 @@ class Controller:
     def _step_reply(self, step) -> Reply:
         if step.kind in ("psy", "digest"):
             return psy_render.step_reply(self.core.conn, step)
+        if step.kind == "term" and step.payload.get("kind") == "intro":
+            r = academic_render.step_reply(self.core.conn, step)
+            r.audio = self._term_audio(step.payload["term_id"])
+            return r
         if step.kind in ("term", "text"):
             return academic_render.step_reply(self.core.conn, step)
         if step.kind == "exam":
@@ -377,7 +405,26 @@ class Controller:
             return academic_render.speech_reply(step)
         if step.kind == "exit_speech":
             return academic_render.exit_speech_reply(step, live=self._live_on(step))
-        return render.step_reply(step, self._audio(step))
+        return render.step_reply(self._once_block_intro(step), self._audio(step))
+
+    def _once_block_intro(self, step):
+        """«Новый блок …» — на первой карточке блока в сессии, а не на каждой (0.11.3)."""
+        if step.kind != "task":
+            return step
+        bi = (step.payload.get("meta") or {}).get("block_intro")
+        if not bi:
+            return step
+        earlier = self.core.conn.execute(
+            "SELECT 1 FROM session_steps a JOIN session_steps b ON b.session_id = a.session_id AND b.seq < a.seq "
+            "WHERE a.id = ? AND json_extract(b.payload_json, '$.meta.block_intro.block') = ? "
+            "AND json_extract(b.payload_json, '$.meta.block_intro.module') = ? LIMIT 1",
+            (step.id, bi["block"], bi["module"])).fetchone()
+        if earlier is None:
+            return step
+        from dataclasses import replace as _replace
+        p = json.loads(json.dumps(step.payload))
+        p["meta"].pop("block_intro", None)
+        return _replace(step, payload=p)
 
     def _finished(self, s) -> list[Reply]:
         if s is None:
@@ -541,6 +588,20 @@ class Controller:
             return None
         task = step.task()
         return self._audio_for(task.audio_item, speed) if task.audio_item else None
+
+    def _term_audio(self, term_id: int, speed: str = "normal") -> AudioRef | None:
+        """Звук нового термина модуля 5 (озвучка 0.11.2), если текст не менялся после озвучки."""
+        from ..voicing import term_key
+        t = self.core.conn.execute("SELECT code, term FROM terms WHERE id = ?", (term_id,)).fetchone()
+        if t is None:
+            return None
+        row = self.core.rehearsals.line_audio(term_key(t["code"]), t["term"], speed)
+        if row is None:
+            return None
+        path = Path(row["path"])
+        if not path.is_absolute():
+            path = self.cfg.paths.audio_dir / path
+        return AudioRef(None, speed, str(path), row["tg_file_id"], line_key=term_key(t["code"]))
 
     def _audio_for(self, item_id: int, speed: str) -> AudioRef | None:
         row = self.core.conn.execute("SELECT path, tg_file_id FROM audio_files WHERE item_id = ? AND speed = ?",

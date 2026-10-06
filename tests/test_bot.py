@@ -243,8 +243,11 @@ def test_voice_transcribed_and_counted(core, db):
         got.append(1)
         return b"ogg"
 
-    run(c.on_voice(6, fetch))                             # знакомство: без расшифровки
-    assert not got and not stt.calls
+    stt.texts.append(step.task().expected[0])
+    res = run(c.on_voice(6, fetch))                       # знакомство: бот говорит, что расслышал (0.11.3)
+    assert got and res.replies[0].text.startswith("Верно. Расслышал:")
+    got.clear()
+    stt.calls.clear()
     step = core.engine.current()
     while step.task().format == "intro":
         run(c.on_callback(f"done:{step.id}"))

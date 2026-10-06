@@ -226,7 +226,10 @@ class SessionEngine(PsySteps, TermSteps, TextSteps, ExamSteps, SpeechSteps, Exit
     def _en_with_academic(self, ctx: PlanContext, kind: str, sec: int, with_exit: bool = False) -> list[Step]:
         acad = self._academic_steps(ctx, sec, ctx.__dict__.setdefault("terms_planned", set()))
         speech = self._speech_steps(ctx, sec, long_ok=ctx.__dict__.get("long_ok", False))
-        return acad + speech + (self._en_block(ctx, kind, sec, with_exit) if kind != "plain" else [])
+        main = self._en_block(ctx, kind, sec, with_exit) if kind != "plain" else []
+        if kind == "5":                       # пятиминутка — сначала основной путь, термины модуля 5 — после
+            return main + acad + speech
+        return acad + speech + main
 
     def compose(self, ctx: PlanContext, kind: str, sec: int) -> list[Step]:
         """Предмет блока выбирает недобор; 30 минут — два блока по 15 с переключением;
@@ -238,7 +241,8 @@ class SessionEngine(PsySteps, TermSteps, TextSteps, ExamSteps, SpeechSteps, Exit
             text = self._text_step(ctx, sec) if kind in ("30", "evening") else []
             acad = [] if text else self._academic_steps(ctx, sec, set())
             speech = self._speech_steps(ctx, sec, long_ok=kind in ("30", "evening"))
-            steps = text + acad + speech + self.planner.build(ctx, kind, sec)
+            main = self.planner.build(ctx, kind, sec)
+            steps = (main + acad + speech) if kind == "5" else (text + acad + speech + main)
             # критерий выхода — в начале сессии (на свежую голову), остальное — за ним
             return [st for st in steps if st.slot == "exit"] + [st for st in steps if st.slot != "exit"]
         day = ctx.day
@@ -471,14 +475,15 @@ class SessionEngine(PsySteps, TermSteps, TextSteps, ExamSteps, SpeechSteps, Exit
         steps = []
         last = self.conn.execute("SELECT track FROM session_steps WHERE session_id = ? AND status = 'done' "
                                  "ORDER BY seq DESC LIMIT 1", (s["id"],)).fetchone()
-        if self._psy_on() and (self.days.choose_track(day) == Track.PSY or (last and last[0] == Track.PSY.value)):
+        five = s["kind"] == "5"                  # пятиминутка — только английский, без разговора (0.11.3)
+        if not five and self._psy_on() and (self.days.choose_track(day) == Track.PSY or (last and last[0] == Track.PSY.value)):
             # тема психологии продолжается в той же сессии: разбор после несданного среза,
             # вопросы после разбора — в пределах заказанного времени и лимита нового
             steps = self.psy_planner.build(ctx, max(left, 300), skip_digests=self._deferred_digests(day),
                                            session_sec=s["ordered_sec"])
         if not steps:
             steps, _ = self.planner.review_slot(ctx, left, stages=(2, 3), slot="topup")
-        if not steps and talks < MAX_TALKS:
+        if not steps and talks < MAX_TALKS and not five:
             steps, _ = self.planner.talk_slot(ctx, max(left, self.est.get("dialog")))
         if not steps:
             return None

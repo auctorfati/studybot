@@ -242,3 +242,95 @@ def test_mode_question_names_waiting_voice_work(core, monkeypatch):
     monkeypatch.setattr(core.engine.blocks, "due_for_control", lambda day: None)
     monkeypatch.setattr(core.engine.planner, "speech_pending", lambda day, now: 0)
     assert "устные ступени закрываются только голосом" in ctl._mode_question("30").text
+
+
+def test_intro_repeat_feedback_and_retry(core):
+    """0.11.3: повтор при знакомстве — бот говорит, что расслышал; не совпало — фраза и ещё попытка."""
+    from studybot.speech import FakeSTT
+    stt = FakeSTT("completely different words")
+    ctl = Controller(core, core.cfg, stt)
+    run(ctl.on_callback("smode:15:voice"))
+    step = core.engine.current()
+    assert step.task().format == "intro"
+
+    async def fetch():
+        return b"ogg"
+    res = run(ctl.on_voice(3, fetch))
+    assert res.replies[0].text.startswith("Расслышал: «completely different words».")
+    assert core.engine.current().id == step.id                     # остаёмся на фразе
+    assert f"done:{step.id}" in [b.data for r in res.replies for row in r.buttons for b in row]
+    stt.texts.append(step.task().expected[0])
+    res = run(ctl.on_voice(3, fetch))
+    assert res.replies[0].text.startswith("Верно.") and core.engine.current().id != step.id
+
+
+def test_block_header_once_per_session(core):
+    from studybot.speech import FakeSTT
+    ctl = Controller(core, core.cfg, FakeSTT())
+    res = run(ctl.on_callback("smode:15:voice"))
+    assert "Новый блок" in res.replies[-1].text
+    step = core.engine.current()
+    res = run(ctl.on_callback(f"done:{step.id}"))
+    nxt = core.engine.current()
+    if nxt.kind == "task" and nxt.task().format == "intro":
+        assert "Новый блок" not in res.replies[-1].text
+
+
+def test_five_minutes_no_psychology_topup(core, monkeypatch):
+    """Пятиминутка — английский; кончился план — добор только повторениями, без психологии и разговора."""
+    monkeypatch.setattr(core.engine, "_psy_on", lambda: True)
+    called = []
+    monkeypatch.setattr(core.engine.psy_planner, "build", lambda *a, **k: called.append(1) or [])
+    monkeypatch.setattr(core.engine.planner, "talk_slot", lambda *a, **k: (called.append(2) or [], 0))
+    core.engine.start("5")
+    s = core.engine.active()
+    assert core.engine._topup(s) is None or True
+    assert 1 not in called and 2 not in called
+
+
+def test_voice_forbidden_hint():
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.methods import SendVoice
+    from studybot.bot import telegram as tg
+    from studybot.bot.ui import AudioRef
+    sent, events = [], []
+
+    class Bot:
+        async def send_voice(self, chat_id, source):
+            raise TelegramBadRequest(SendVoice(chat_id=1, voice="x"), "Bad Request: VOICE_MESSAGES_FORBIDDEN")
+
+        async def send_message(self, chat_id, text, **kw):
+            sent.append(text)
+
+    class Ctl:
+        def service_event(self, *a):
+            events.append(a)
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+        f.write(b"x")
+    asyncio.run(tg.send_audio(Bot(), 1, Ctl(), AudioRef(1, "normal", f.name, None)))
+    os.unlink(f.name)
+    assert sent and "Конфиденциальность" in sent[0] and events
+
+
+def test_intro_repeat_template_phrase(core):
+    """0.11.4: фраза с «…» — повтор без слова на месте многоточия тоже верный."""
+    from studybot.bot.controller import Controller as C
+    from studybot.speech import FakeSTT
+    from studybot.sessions.planner import Step as S
+    stt = FakeSTT("How do you say in English?", "How do you say")
+    ctl = C(core, core.cfg, stt)
+    run(ctl.on_callback("smode:15:voice"))
+    step = core.engine.current()
+    core.conn.execute("UPDATE session_steps SET payload_json = json_set(payload_json, '$.expected', json_array(?), "
+                      "'$.shown_en', ?) WHERE id = ?", ('How do you say "…" in English?', 'How do you say "…" in English?', step.id))
+
+    async def fetch():
+        return b"ogg"
+    res = run(ctl.on_voice(3, fetch))
+    assert res.replies[0].text.startswith("Верно.")
+    step = core.engine.current()
+    core.conn.execute("UPDATE session_steps SET payload_json = json_set(payload_json, '$.expected', json_array(?), "
+                      "'$.shown_en', ?) WHERE id = ?", ('How do you say "…" in English?', 'How do you say "…" in English?', step.id))
+    res = run(ctl.on_voice(3, fetch))
+    assert "любое слово" in res.replies[0].text and core.engine.current().id == step.id

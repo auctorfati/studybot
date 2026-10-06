@@ -20,6 +20,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ChatAction, ChatType
 from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (BotCommand, BufferedInputFile, CallbackQuery, ErrorEvent, FSInputFile,
                            InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message,
                            ReplyKeyboardMarkup)
@@ -51,6 +52,9 @@ TEXT_LIMIT = 4000
 ONE_SHOT = {"done", "idk", "skip", "dispute", "imp", "start", "skipday", "mode", "pause", "unpause",
             "pshow", "pself", "dgn", "dgl", "tdone", "txr", "exr", "lsn"}
 VOICE_EXT = {".ogg", ".oga", ".opus"}
+VOICE_FORBIDDEN_HINT = ("Telegram не пропускает голосовые сообщения от бота: они запрещены в настройках. "
+                        "Открой «Настройки» → «Конфиденциальность» → «Голосовые сообщения» → «Исключения» → "
+                        "«Всегда разрешать» и добавь этого бота. Потом нажми «Сегодня» → «Показать задание».")
 
 
 def inline(rows) -> InlineKeyboardMarkup:
@@ -88,7 +92,14 @@ async def send_audio(bot: Bot, chat_id: int, ctl: Controller, a: AudioRef) -> No
         return
     source = a.file_id or FSInputFile(a.path)
     if Path(a.path).suffix.lower() in VOICE_EXT:
-        msg = await bot.send_voice(chat_id, source)
+        try:
+            msg = await bot.send_voice(chat_id, source)
+        except TelegramBadRequest as exc:
+            if "VOICE_MESSAGES_FORBIDDEN" not in str(exc):
+                raise
+            ctl.service_event("telegram", "warning", "голосовые запрещены в настройках конфиденциальности")
+            await bot.send_message(chat_id, VOICE_FORBIDDEN_HINT)
+            return
         file_id = msg.voice.file_id if msg.voice else None
     else:
         msg = await bot.send_audio(chat_id, source)

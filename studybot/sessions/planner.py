@@ -27,7 +27,7 @@ from .day import DayBook
 from .estimates import Estimates
 
 TEMPLATES = {
-    "5": [("review", 300)],
+    "5": [("review", 300), ("new", 0)],      # повторять нечего или мало — остаток уходит в новые фразы (0.11.2)
     "15": [("review", 300), ("new", 300), ("talk", 300)],
     "30": [("review", 480), ("sound", 180), ("new", 480), ("hearing", 240), ("talk", 420)],
 }

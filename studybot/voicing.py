@@ -30,6 +30,10 @@ class Job:
     base: str          # путь без темпа и расширения, от папки аудио
 
 
+def term_key(code: str) -> str:
+    return f"term:{code}"
+
+
 def _safe(s: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ".-" else "_" for ch in s)
 
@@ -50,6 +54,9 @@ def plan(conn: sqlite3.Connection, rehearsals, dg_cfg) -> list[Job]:
         for key, text in scenario_lines(reh):
             if text.strip():
                 jobs.append(Job("line", key, text, dg_cfg.voice, f"lines/{_safe(code)}/{_safe(key)}"))
+    for r in conn.execute("SELECT code, term FROM terms WHERE archived = 0 ORDER BY sort_key"):
+        if r["term"].strip():                 # модуль 5: как звучит термин (карточка знакомства)
+            jobs.append(Job("line", term_key(r["code"]), r["term"], dg_cfg.voice, f"terms/{_safe(r['code'])}"))
     voices = dg_cfg.record_voices or (dg_cfg.voice,)
     for r in conn.execute("SELECT code, fields_json FROM records WHERE archived = 0 AND kind IN ('story', 'listening') "
                           "ORDER BY sort_key"):

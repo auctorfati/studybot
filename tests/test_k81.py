@@ -1212,3 +1212,37 @@ def test_module5_text_share_by_week(core):
     core.conn.execute("DELETE FROM days WHERE study_date = ?", (y,))
     run(ctl.on_text("30 мин"))
     assert core.engine.current().kind == "text"                  # недели без модуля 5 — текст есть
+
+
+def test_module5_term_card_with_sound(core, tmp_path):
+    """0.11.2: термин модуля 5 озвучивается (слово, два темпа), звук приходит с карточкой знакомства."""
+    import asyncio
+    from dataclasses import replace
+    from studybot import voicing
+    from studybot.config import DeepgramConfig
+    imp(core, "Английский_Модуль_5_Банк_блоки_1-3.md", M5)
+    jobs = [j for j in voicing.plan(core.conn, core.rehearsals, DeepgramConfig()) if j.key.startswith("term:")]
+    assert [(j.key, j.text) for j in jobs][:1] == [("term:5.1.01", "abstract")] and len(jobs) == 2
+
+    class TTS:
+        async def speak(self, text, voice=None, speed=1.0):
+            return text.encode(), "ogg"
+    cfg = replace(core.cfg, paths=replace(core.cfg.paths, data_dir=tmp_path))
+    todo = voicing.pending(core.conn, cfg.paths.audio_dir, jobs)
+    asyncio.run(voicing.run(core.conn, cfg.paths.audio_dir, TTS(), todo, 0.8))
+    ctl = Controller(core, cfg, StubSTT())
+    res = run(ctl.on_text("15 мин"))
+    card = res.replies[-1]
+    assert core.engine.current().kind == "term" and card.audio is not None
+    assert card.audio.line_key == "term:5.1.01" and open(card.audio.path, "rb").read() == b"abstract"
+
+
+def test_five_minutes_with_nothing_to_review_gives_new_phrases(core):
+    """0.11.2: пятиминутка в первый день — новые фразы модуля 1, а не пустое повторение и добор психологией."""
+    imp(core, "Английский_Модуль_5_Банк_блоки_1-3.md", M5)
+    ctl = Controller(core, core.cfg, StubSTT())
+    run(ctl.on_text("5 мин"))
+    sid = core.engine.active()["id"]
+    kinds = [(r[0], r[1]) for r in core.conn.execute(
+        "SELECT kind, slot FROM session_steps WHERE session_id = ? ORDER BY seq", (sid,))]
+    assert kinds[0] == ("task", "new") and core.engine.current().kind == "task"
